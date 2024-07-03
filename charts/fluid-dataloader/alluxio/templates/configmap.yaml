@@ -63,19 +63,29 @@ data:
         local replica=$2
         checkPathExistence "$path"
         alluxio fs setReplication --max $replica -R $path
-        if [[ $needLoadMetadata == 'true' ]]; then
-            # For Alluxio above 2.8.0, distributedLoad with -Dalluxio.user.file.metadata.sync.interval=0 cannot load new added file.
-            # Related issue: https://github.com/Alluxio/alluxio/issues/17827
-            # Use ls with -Dalluxio.user.file.metadata.sync.interval=0 instead
-            if needPreLoadMetadata; then
-                time alluxio fs ls -Dalluxio.user.file.metadata.sync.interval=0 -R $path
-                time alluxio fs distributedLoad --replication $replica $path
+        max_retries=3
+        retry_count=0
+        while [ $retry_count -lt $max_retries ]; do
+            output=""
+            if [[ $needLoadMetadata == 'true' ]]; then
+                # For Alluxio above 2.8.0, distributedLoad with -Dalluxio.user.file.metadata.sync.interval=0 cannot load new added file.
+                # Related issue: https://github.com/Alluxio/alluxio/issues/17827
+                # Use ls with -Dalluxio.user.file.metadata.sync.interval=0 instead
+                if needPreLoadMetadata; then
+                    time alluxio fs ls -Dalluxio.user.file.metadata.sync.interval=0 -R $path
+                    output=$(time alluxio fs distributedLoad --replication $replica $path)
+                else
+                    output=$(time alluxio fs distributedLoad -Dalluxio.user.file.metadata.sync.interval=0 --replication $replica $path)
+                fi
             else
-                time alluxio fs distributedLoad -Dalluxio.user.file.metadata.sync.interval=0 --replication $replica $path
+                output=$(time alluxio fs distributedLoad --replication $replica $path)
             fi
-        else
-            time alluxio fs distributedLoad --replication $replica $path
-        fi
+            failed_file_count=$(echo "$output" | grep -oE 'failed file count is [0-9]+' | awk '{print $NF}')
+            if [ $failed_file_count -eq 0 ]; then
+                break
+            fi
+            retry_count=$((retry_count+1))
+        done
     }
     
     function main() {
